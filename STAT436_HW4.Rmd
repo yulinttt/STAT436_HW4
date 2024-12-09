@@ -1,0 +1,152 @@
+---
+title: "STAT436_HW4"
+author: "Yulin Tong"
+date: "2024-12-8"
+output: html_document
+---
+```{r}
+rm(list = ls());
+gc();
+library(rsconnect)
+library(shiny)
+library(ggplot2)
+library(ggrepel)
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(dplyr)
+```
+
+```{r}
+weather <- read.csv("weather.csv")
+usage <- read.csv("usage_frequency.csv")
+
+weather$datetime <- as.Date(weather$datetime)
+usage$date <- as.Date(usage$date)
+
+# Aggregate daily pickups and merge with weather data
+daily_usage <- usage %>%
+  group_by(date) %>%
+  summarize(daily_pickup = sum(pickup_counts, na.rm = TRUE))
+
+merged_data <- daily_usage %>%
+  inner_join(weather, by = c("date" = "datetime"))
+
+# Select relevant columns for PCA
+pca_data <- merged_data %>%
+  select(temp, humidity, precip, windspeed, cloudcover, daily_pickup)
+
+```
+
+```{r}
+# PCA
+pca_rec <- recipe(daily_pickup ~ ., data = pca_data) %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors())
+
+pca_prep <- prep(pca_rec)
+
+# Extract PCA scores and variance explained
+pca_scores <- juice(pca_prep)
+pca_variances <- tidy(pca_prep, 2, type = "variance")
+
+print(head(pca_scores))
+```
+
+```{r}
+# Variance explained plot
+ggplot(pca_variances, aes(component, value)) +
+  geom_col(fill = "#69b3a2") +
+  labs(title = "Variance Explained by Principal Components",
+       x = "Principal Component", y = "Proportion of Variance")
+```
+```{r}
+# PCA scores scatter plot
+ggplot(pca_scores, aes(PC1, PC2, color = daily_pickup)) +
+  geom_point(size = 2, alpha = 0.7) +
+  scale_color_gradient(low = "blue", high = "red") +
+  geom_text_repel(aes(label = rownames(pca_scores)), size = 3) +
+  labs(title = "PCA Scores (PC1 vs PC2)",
+       x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+```{r}
+# PCA loadings plot
+pca_components <- tidy(pca_prep, 2)
+ggplot(pca_components, aes(value, terms)) +
+  geom_col(fill = "#f8766d") +
+  facet_wrap(~component, scales = "free") +
+  labs(title = "Principal Component Loadings",
+       x = "Loading Value", y = "Feature") +
+  theme_minimal()
+```
+```{r}
+# Shiny App
+ui <- fluidPage(
+  titlePanel("PCA Analysis of Weather and Bike Usage Data"),
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("x_axis", "Select X-axis (Principal Component):", choices = c("PC1", "PC2", "PC3", "PC4", "PC5")),
+      selectInput("y_axis", "Select Y-axis (Principal Component):", choices = c("PC1", "PC2", "PC3", "PC4", "PC5")),
+      plotOutput("variance_plot", height = "200px"), # Compact variance plot
+      div(
+        style = "margin-top: 10px; padding: 5px; border: 1px solid #ccc; background-color: #f9f9f9; font-size: 12px;",
+        "Note: PC1, PC2, and PC3 explain the majority of variance in the data. 
+        It is recommended to prioritize these components for analysis."
+      )
+    ),
+    mainPanel(
+      plotOutput("pca_plot"),
+      plotOutput("loadings_plot")
+    )
+  )
+)
+
+server <- function(input, output) {
+  # Variance explained plot
+  output$variance_plot <- renderPlot({
+    ggplot(pca_variances, aes(component, value)) +
+      geom_col(fill = "#69b3a2") +
+      labs(title = "Variance Explained",
+           x = "PC", y = "Proportion") +
+      theme_minimal(base_size = 10)
+  })
+  
+  # PCA scores scatter plot
+  output$pca_plot <- renderPlot({
+    ggplot(pca_scores, aes_string(input$x_axis, input$y_axis, color = "daily_pickup")) +
+      geom_point(size = 2, alpha = 0.7) +
+      scale_color_gradient(low = "blue", high = "red") +
+      labs(title = "PCA Score Plot",
+           x = input$x_axis, y = input$y_axis) +
+      theme_minimal()
+  })
+
+  # PCA loadings plot for selected PCs
+  output$loadings_plot <- renderPlot({
+    selected_components <- c(input$x_axis, input$y_axis)
+    ggplot(pca_components %>% filter(component %in% selected_components), aes(value, terms)) +
+      geom_col(fill = "#f8766d") +
+      facet_wrap(~component, scales = "free") +
+      labs(title = "Loadings of Selected Components",
+           x = "Loading Value", y = "Feature") +
+      theme_minimal()
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
+
+```{r}
+# Additional analysis: Linear regression on PC1
+lm(daily_pickup ~ PC1, data = pca_scores)
+summary(lm(daily_pickup ~ PC1, data = pca_scores))
+
+# Plot PC1 vs daily_pickup
+ggplot(pca_scores, aes(x = PC1, y = daily_pickup)) +
+  geom_point(alpha = 0.7) +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Relationship Between PC1 and Daily Pickup",
+       x = "PC1", y = "Daily Pickup")
+```
+
